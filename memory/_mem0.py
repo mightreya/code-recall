@@ -6,7 +6,6 @@ from mem0 import Memory
 from mem0.llms.anthropic import AnthropicLLM
 from mem0.memory.utils import remove_code_blocks
 
-# ---------------------------------------------------------------------------
 # Class-level monkey-patch for AnthropicLLM (mem0ai v1.0.3)
 #
 # Bug 1: BaseLlmConfig defaults both temperature=0.1 and top_p=0.1;
@@ -17,7 +16,6 @@ from mem0.memory.utils import remove_code_blocks
 #
 # Upstream: PR #3732 open since Nov 2025, unmerged. No fix in v1.0.3.
 # Research: .docs/mem0-anthropic-bugs-research.md
-# ---------------------------------------------------------------------------
 
 
 def _patched_generate(self, messages, response_format=None, tools=None, tool_choice="auto", **kwargs):

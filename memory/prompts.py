@@ -3,17 +3,19 @@
 Architecture:
   - build_prompt(domain) → extraction instructions only (no output format)
   - build_mem0_prompt(domain) → wraps build_prompt() + mem0 {"facts": []} format suffix
-  - register_domain(name, instructions) → extend with custom domains at runtime
-  - Set MEMORY_DOMAINS_MODULE env var to auto-import a module that calls register_domain()
+  - Set MEMORY_DOMAINS_FILE env var to load additional domains from a YAML file
 """
 
-import importlib
+import logging
 import os
 from datetime import datetime
+from pathlib import Path
 
-# ---------------------------------------------------------------------------
+import yaml
+
+logger = logging.getLogger(__name__)
+
 # Shared preamble and rules (appended to every domain prompt)
-# ---------------------------------------------------------------------------
 
 _SHARED_RULES = """\
 
@@ -44,9 +46,7 @@ def _date_line() -> str:
     return f"\n\nToday's date is {datetime.now().strftime('%Y-%m-%d')}."
 
 
-# ---------------------------------------------------------------------------
 # Domain-specific instruction blocks
-# ---------------------------------------------------------------------------
 
 _DEVELOPER_INSTRUCTIONS = """\
 You are a developer workflow knowledge curator. Extract facts about the developer's codebase, tooling, \
@@ -88,9 +88,17 @@ _DOMAIN_INSTRUCTIONS: dict[str, str] = {
     "developer": _DEVELOPER_INSTRUCTIONS,
 }
 
-# ---------------------------------------------------------------------------
+# Load additional domains from YAML file
+
+_domains_file = os.environ.get("MEMORY_DOMAINS_FILE")
+if _domains_file:
+    _domains_path = Path(_domains_file)
+    if _domains_path.is_file():
+        _extra = yaml.safe_load(_domains_path.read_text())
+        _DOMAIN_INSTRUCTIONS.update(_extra)
+        logger.info("Loaded %d domain(s) from %s", len(_extra), _domains_path.name)
+
 # Mem0 output format suffix
-# ---------------------------------------------------------------------------
 
 _MEM0_FORMAT_SUFFIX = """
 
@@ -104,15 +112,6 @@ Remember:
 list of strings.
 - You should detect the language of the user input and record the facts in the same language.
 """
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
-def register_domain(name: str, instructions: str) -> None:
-    """Register an additional domain for fact extraction."""
-    _DOMAIN_INSTRUCTIONS[name] = instructions
 
 
 def build_prompt(domain: str) -> str:
@@ -132,12 +131,3 @@ def build_mem0_prompt(domain: str) -> str:
     Used by OpenClaw bot configs (customPrompt) where mem0 parses the output.
     """
     return build_prompt(domain) + _MEM0_FORMAT_SUFFIX
-
-
-# ---------------------------------------------------------------------------
-# Auto-load additional domains from external module
-# ---------------------------------------------------------------------------
-
-_extend_module = os.environ.get("MEMORY_DOMAINS_MODULE")
-if _extend_module:
-    importlib.import_module(_extend_module)
