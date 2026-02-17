@@ -11,7 +11,8 @@ TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 [ -z "$TRANSCRIPT" ] || [ ! -f "$TRANSCRIPT" ] && exit 0
 
 # Skip if transcript hasn't grown since last capture (e.g. interrupted turn)
-STATE="/tmp/cc-mem-$(md5sum <<< "$TRANSCRIPT" | cut -c1-12)"
+HASH=$(command -v md5sum >/dev/null && md5sum <<< "$TRANSCRIPT" || md5 -q -s "$TRANSCRIPT")
+STATE="/tmp/cc-mem-$(echo "$HASH" | cut -c1-12)"
 CAPTURED=$(cat "$STATE" 2>/dev/null || echo 0)
 TOTAL=$(wc -l < "$TRANSCRIPT")
 [ "$TOTAL" -le "$CAPTURED" ] && exit 0
