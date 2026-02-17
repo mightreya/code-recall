@@ -9,7 +9,6 @@ Endpoints:
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -76,7 +75,7 @@ class _Handler(BaseHTTPRequestHandler):
             metadata = entry.get("metadata", {}) or {}
             raw_date = metadata.get("sourced_at") or entry.get("updated_at") or entry.get("created_at") or ""
             timestamp = raw_date[:16].replace("T", " ") if len(raw_date) >= 16 else raw_date[:10]
-            source = _format_source(metadata.get("source", ""))
+            source = metadata.get("source", "")
             labels = [timestamp, metadata.get("project", ""), metadata.get("category", ""), source]
             prefix = " ".join(f"[{label}]" for label in labels if label)
             lines.append(f"- {prefix} {text}" if prefix else f"- {text}")
@@ -108,17 +107,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, /, *args: object) -> None:
         """Suppress default request logging."""
-
-
-def _format_source(source: str) -> str:
-    """Convert source filename like 'session-05-sep-24-2025.md' to readable label."""
-    if not source:
-        return ""
-    match = re.match(r"session-(\d+)", source)
-    if not match:
-        return ""
-    session_number = int(match.group(1))
-    return f"Therapy session #{session_number}"
 
 
 def _parse_add_body(body: str) -> dict:
