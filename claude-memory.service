@@ -1,0 +1,14 @@
+[Unit]
+Description=Claude Code Memory Daemon (Mem0 + Qdrant)
+After=qdrant.service
+
+[Service]
+Type=simple
+ExecStart=%h/claude-memory/.venv/bin/python %h/claude-memory/daemon.py
+Environment=PYTHONPATH=%h/claude-memory
+Environment=GEMINI_API_KEY=YOUR_KEY_HERE
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
