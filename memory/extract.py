@@ -12,7 +12,7 @@ import os
 from google import genai
 from google.genai import types
 
-from memory.prompts import build_prompt
+from memory.prompts import WORKFLOW_STATE_PROMPT, build_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,27 @@ def extract_facts(text: str, domain: str) -> list[dict]:
 
     logger.debug("Extracted %d facts (%d passed filter) from %d chars", len(facts), len(filtered), len(text))
     return filtered
+
+
+def extract_workflow_state(text: str) -> str:
+    """Extract structured workflow state from conversation text using Gemini.
+
+    Returns raw markdown string suitable for WORKFLOW_STATE.md.
+    Unlike extract_facts(), no JSON schema — Gemini returns free-form markdown.
+    """
+    if not text or len(text.strip()) < 50:
+        return ""
+
+    client = _get_client()
+    config = types.GenerateContentConfig(
+        system_instruction=WORKFLOW_STATE_PROMPT,
+        temperature=0,
+        max_output_tokens=2048,
+    )
+    contents = [types.Content(parts=[types.Part(text=text)], role="user")]
+    response = client.models.generate_content(model=_MODEL, contents=contents, config=config)
+    result = response.candidates[0].content.parts[0].text if response.candidates else ""
+    return result.strip()
 
 
 def store_facts(memory, facts: list[dict], user_id: str, extra_metadata: dict | None = None) -> int:

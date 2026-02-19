@@ -113,6 +113,36 @@ list of strings.
 - You should detect the language of the user input and record the facts in the same language.
 """
 
+# Workflow state extraction prompt (domain-agnostic)
+
+WORKFLOW_STATE_PROMPT = """\
+Extract the current workflow state from this conversation.
+Return a markdown document with these sections:
+
+# Workflow State
+> Updated: {timestamp}
+
+## Active Goal
+What the user is trying to accomplish. Status: IN_PROGRESS / BLOCKED / COMPLETED
+
+## Progress
+- [x] Completed steps
+- [ ] **→ Current step** ← NEXT
+- [ ] Remaining steps
+
+## Context
+- **Key files/dirs**: paths mentioned
+- **Last action**: what was just done
+- **Next action**: what should happen next
+- **Blockers**: what's waiting on user or external input
+
+## Decisions
+Key decisions made during this conversation.
+
+If no active workflow (casual conversation), return exactly: "No active workflow."
+Keep output under 500 tokens. Be specific — file paths, item counts, exact status.\
+"""
+
 
 def build_prompt(domain: str) -> str:
     """Return extraction instructions for a domain, without output format.

@@ -9,12 +9,19 @@ Endpoints:
 
 import json
 import logging
+import os
+import re
+import tempfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from threading import Thread
 
+import httpx
+from google.genai.errors import APIError
+
 from memory._mem0 import build_memory
-from memory.extract import extract_facts, store_facts
+from memory.extract import extract_facts, extract_workflow_state, store_facts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -22,8 +29,8 @@ logger = logging.getLogger(__name__)
 HOST = "127.0.0.1"
 PORT = 7377
 SEARCH_LIMIT = 5
-_DEFAULT_COLLECTION = "mem0_dev"
-_DEFAULT_USER_ID = "developer"
+_DEFAULT_COLLECTION = "mem0_claude_code"
+_DEFAULT_USER_ID = "claude_code"
 _DEFAULT_DOMAIN = "developer"
 
 # Lazy-initialized mem0 Memory instances keyed by collection name
@@ -52,6 +59,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_search(body)
         elif self.path == "/add":
             self._handle_add(body)
+        elif self.path == "/capture-state":
+            self._handle_capture_state(body)
         else:
             self._respond(404, "not found")
 
@@ -75,7 +84,7 @@ class _Handler(BaseHTTPRequestHandler):
             metadata = entry.get("metadata", {}) or {}
             raw_date = metadata.get("sourced_at") or entry.get("updated_at") or entry.get("created_at") or ""
             timestamp = raw_date[:16].replace("T", " ") if len(raw_date) >= 16 else raw_date[:10]
-            source = metadata.get("source", "")
+            source = _format_source(metadata.get("source", ""))
             labels = [timestamp, metadata.get("project", ""), metadata.get("category", ""), source]
             prefix = " ".join(f"[{label}]" for label in labels if label)
             lines.append(f"- {prefix} {text}" if prefix else f"- {text}")
@@ -98,6 +107,22 @@ class _Handler(BaseHTTPRequestHandler):
         Thread(target=_add_memory, args=(params,), daemon=True).start()
         self._respond(204, "")
 
+    def _handle_capture_state(self, body: str) -> None:
+        try:
+            data = json.loads(body)
+            text = data.get("text", "")
+            workspace = data.get("workspace", "")
+        except (json.JSONDecodeError, AttributeError):
+            self._respond(400, "invalid json")
+            return
+
+        if not text or not workspace:
+            self._respond(400, "text and workspace required")
+            return
+
+        Thread(target=_capture_workflow_state, args=(text, workspace), daemon=True).start()
+        self._respond(204, "")
+
     def _respond(self, code: int, body: str) -> None:
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
@@ -107,6 +132,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, /, *args: object) -> None:
         """Suppress default request logging."""
+
+
+def _format_source(source: str) -> str:
+    """Convert source filename like 'session-05-sep-24-2025.md' to readable label."""
+    if not source:
+        return ""
+    match = re.match(r"session-(\d+)", source)
+    if not match:
+        return ""
+    session_number = int(match.group(1))
+    return f"Therapy session #{session_number}"
 
 
 def _parse_add_body(body: str) -> dict:
@@ -150,6 +186,37 @@ def _add_memory(params: dict) -> None:
         )
     except Exception:
         logger.exception("Failed to capture memory for %s", params.get("collection", "unknown"))
+
+
+def _capture_workflow_state(text: str, workspace: str) -> None:
+    """Extract workflow state via Gemini and write to WORKFLOW_STATE.md atomically."""
+    try:
+        state = extract_workflow_state(text)
+    except (APIError, httpx.HTTPError):
+        logger.exception("Gemini extraction failed for %s", workspace)
+        return
+
+    if not state or state.strip() == "No active workflow.":
+        logger.info("No active workflow detected, skipping state write")
+        return
+
+    target = Path(workspace) / "WORKFLOW_STATE.md"
+    tmp_path = ""
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=workspace, suffix=".tmp")
+        with os.fdopen(fd, "w") as handle:
+            handle.write(state)
+        os.rename(tmp_path, target)
+    except OSError:
+        logger.exception("Failed to write workflow state to %s", target)
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return
+
+    logger.info("Wrote workflow state to %s (%d chars)", target, len(state))
 
 
 def main() -> None:
