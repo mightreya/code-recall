@@ -122,8 +122,9 @@ Return a markdown document with these sections:
 # Workflow State
 > Updated: {timestamp}
 
-## Active Goal
-What the user is trying to accomplish. Status: IN_PROGRESS / BLOCKED / COMPLETED
+## Active Goals
+- **Goal name** — Status: IN_PROGRESS / BLOCKED / COMPLETED
+- **Goal name** — Status: IN_PROGRESS / BLOCKED / COMPLETED
 
 ## Progress
 - [x] Completed steps
