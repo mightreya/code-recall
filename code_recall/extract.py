@@ -9,15 +9,18 @@ import json
 import logging
 import os
 
+import httpx
 from google import genai
 from google.genai import types
 
+from code_recall._mem0 import OLLAMA_URL, QDRANT_URL
 from code_recall.prompts import WORKFLOW_STATE_PROMPT, build_prompt
 
 logger = logging.getLogger(__name__)
 
 _MODEL = "gemini-3-flash-preview"
 _MIN_SPECIFICITY = 3
+_DEDUP_THRESHOLD = 0.90
 
 _RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -140,10 +143,25 @@ def extract_workflow_state(text: str) -> str:
     return result.strip()
 
 
-def store_facts(memory, facts: list[dict], user_id: str, extra_metadata: dict | None = None) -> int:
-    """Store extracted facts in Qdrant via mem0 with infer=False. Returns count stored."""
+def store_facts(
+    memory,
+    facts: list[dict],
+    user_id: str,
+    extra_metadata: dict | None = None,
+    collection_name: str | None = None,
+) -> int:
+    """Store extracted facts in Qdrant via mem0 with infer=False. Returns count stored.
+
+    When collection_name is provided, each fact is checked for near-duplicates
+    before insertion (~35ms overhead per fact). Fail-open: dedup errors are logged
+    but never block insertion.
+    """
     stored = 0
+    skipped = 0
     for fact in facts:
+        if collection_name and _is_duplicate(collection_name, fact["content"]):
+            skipped += 1
+            continue
         metadata = {
             "category": fact["category"],
             "temporal_scope": fact["temporal_scope"],
@@ -159,4 +177,39 @@ def store_facts(memory, facts: list[dict], user_id: str, extra_metadata: dict | 
             metadata=metadata,
         )
         stored += 1
+    if skipped:
+        logger.info("Dedup: skipped %d/%d duplicate facts", skipped, skipped + stored)
     return stored
+
+
+def _is_duplicate(collection: str, text: str) -> bool:
+    """Check if text is a near-duplicate of an existing fact in the collection."""
+    try:
+        embedding = _embed_text(text)
+        if not embedding:
+            return False
+        response = httpx.post(
+            f"{QDRANT_URL}/collections/{collection}/points/search",
+            json={"vector": embedding, "limit": 1},
+        )
+        results = response.json().get("result", [])
+        if results and results[0]["score"] >= _DEDUP_THRESHOLD:
+            logger.debug("Duplicate (%.3f): %s", results[0]["score"], text[:80])
+            return True
+    except (httpx.HTTPError, KeyError, IndexError):
+        logger.debug("Dedup check failed for: %s", text[:80], exc_info=True)
+    return False
+
+
+def _embed_text(text: str) -> list[float] | None:
+    """Embed text via Ollama BGE-M3. Returns None on failure."""
+    try:
+        response = httpx.post(
+            f"{OLLAMA_URL}/api/embed",
+            json={"model": "bge-m3", "input": text},
+        )
+        embeddings = response.json().get("embeddings", [])
+        return embeddings[0] if embeddings else None
+    except (httpx.HTTPError, KeyError, IndexError):
+        logger.debug("Embedding failed for: %s", text[:80], exc_info=True)
+        return None

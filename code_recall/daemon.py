@@ -177,7 +177,7 @@ def _add_memory(params: dict) -> None:
         metadata = {"sourced_at": sourced_at}
         if params.get("project"):
             metadata["project"] = params["project"]
-        store_facts(memory, facts, params["user_id"], extra_metadata=metadata)
+        store_facts(memory, facts, params["user_id"], extra_metadata=metadata, collection_name=params["collection"])
         logger.info(
             "Extracted %d facts for %s (%d chars)",
             len(facts),

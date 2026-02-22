@@ -34,6 +34,9 @@ from them — the assistant can misinterpret, hallucinate, or state incorrect in
 - Vague summaries: "discussed work topics," "shared preferences," "talked about technical stuff"
 - Common knowledge: "uses a computer," "writes code," "has a job"
 - Repetitions of already-known information
+- Tool outputs and results: "the API returned 200," "got 3 results," "build succeeded"
+- Default software behavior: "npm install installs packages," "git commit saves changes"
+- Session-specific configuration: "set port to 3000," "using debug mode" (unless a deliberate non-default choice)
 
 ## TEMPORAL CLASSIFICATION — apply before storing:
 - PERMANENT: Unchanging (name, birthday, native language, identity facts)

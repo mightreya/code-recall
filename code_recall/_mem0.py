@@ -6,6 +6,14 @@ from mem0 import Memory
 from mem0.llms.anthropic import AnthropicLLM
 from mem0.memory.utils import remove_code_blocks
 
+QDRANT_HOST = "localhost"
+QDRANT_PORT = 6333
+QDRANT_URL = f"http://{QDRANT_HOST}:{QDRANT_PORT}"
+
+OLLAMA_HOST = "localhost"
+OLLAMA_PORT = 11434
+OLLAMA_URL = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
+
 # Class-level monkey-patch for AnthropicLLM (mem0ai v1.0.3)
 #
 # Bug 1: BaseLlmConfig defaults both temperature=0.1 and top_p=0.1;
@@ -57,13 +65,13 @@ def build_memory(collection_name: str, extraction_prompt: str | None = None) -> 
     config = {
         "embedder": {
             "provider": "ollama",
-            "config": {"model": "bge-m3", "ollama_base_url": "http://localhost:11434"},
+            "config": {"model": "bge-m3", "ollama_base_url": OLLAMA_URL},
         },
         "vector_store": {
             "provider": "qdrant",
             "config": {
-                "host": "localhost",
-                "port": 6333,
+                "host": QDRANT_HOST,
+                "port": QDRANT_PORT,
                 "collection_name": collection_name,
                 "embedding_model_dims": 1024,
             },
