@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 HOST = "127.0.0.1"
 PORT = 7377
 SEARCH_LIMIT = 5
-_DEFAULT_COLLECTION = "mem0_claude_code"
-_DEFAULT_USER_ID = "claude_code"
+_DEFAULT_COLLECTION = "mem0_dev"
+_DEFAULT_USER_ID = "developer"
 _DEFAULT_DOMAIN = "developer"
 
 # Lazy-initialized mem0 Memory instances keyed by collection name
