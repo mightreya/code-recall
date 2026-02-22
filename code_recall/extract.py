@@ -12,7 +12,7 @@ import os
 from google import genai
 from google.genai import types
 
-from memory.prompts import WORKFLOW_STATE_PROMPT, build_prompt
+from code_recall.prompts import WORKFLOW_STATE_PROMPT, build_prompt
 
 logger = logging.getLogger(__name__)
 

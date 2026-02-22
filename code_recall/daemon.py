@@ -20,8 +20,8 @@ from threading import Thread
 import httpx
 from google.genai.errors import APIError
 
-from memory._mem0 import build_memory
-from memory.extract import extract_facts, extract_workflow_state, store_facts
+from code_recall._mem0 import build_memory
+from code_recall.extract import extract_facts, extract_workflow_state, store_facts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
