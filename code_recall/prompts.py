@@ -156,7 +156,8 @@ def build_prompt(domain: str) -> str:
     if domain not in _DOMAIN_INSTRUCTIONS:
         raise ValueError(f"Unknown domain: {domain!r}. Valid: {', '.join(_DOMAIN_INSTRUCTIONS)}")
     instructions = _DOMAIN_INSTRUCTIONS[domain]
-    return instructions + _SHARED_RULES + _date_line()
+    prompt = instructions + _SHARED_RULES + _date_line()
+    return prompt
 
 
 def build_mem0_prompt(domain: str) -> str:
@@ -164,4 +165,5 @@ def build_mem0_prompt(domain: str) -> str:
 
     Used by OpenClaw bot configs (customPrompt) where mem0 parses the output.
     """
-    return build_prompt(domain) + _MEM0_FORMAT_SUFFIX
+    prompt = build_prompt(domain) + _MEM0_FORMAT_SUFFIX
+    return prompt

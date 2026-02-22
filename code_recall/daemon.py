@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Memory daemon: persistent HTTP server for fact extraction and recall.
 
 Endpoints:
@@ -230,7 +229,3 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Shutting down")
         server.shutdown()
-
-
-if __name__ == "__main__":
-    main()

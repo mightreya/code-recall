@@ -139,8 +139,9 @@ def extract_workflow_state(text: str) -> str:
     )
     contents = [types.Content(parts=[types.Part(text=text)], role="user")]
     response = client.models.generate_content(model=_MODEL, contents=contents, config=config)
-    result = response.candidates[0].content.parts[0].text if response.candidates else ""
-    return result.strip()
+    raw_text = response.candidates[0].content.parts[0].text if response.candidates else ""
+    state = raw_text.strip()
+    return state
 
 
 def store_facts(

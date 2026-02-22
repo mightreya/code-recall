@@ -87,4 +87,5 @@ def build_memory(collection_name: str, extraction_prompt: str | None = None) -> 
     }
     if extraction_prompt:
         config["custom_fact_extraction_prompt"] = extraction_prompt
-    return Memory.from_config(config)
+    memory = Memory.from_config(config)
+    return memory
