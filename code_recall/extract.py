@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "gemini-3-flash-preview"
 _MIN_SPECIFICITY = 3
-_DEDUP_THRESHOLD = 0.90
+_DEDUP_THRESHOLD = 0.85
+_MIN_UNIQUE_WORDS = 15
+_DEDUP_COSINE_WEIGHT = 0.7
+_DEDUP_JACCARD_WEIGHT = 0.3
 
 _RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -41,8 +44,14 @@ _RESPONSE_SCHEMA = {
                         "type": "STRING",
                         "enum": ["explicit_statement", "strong_inference", "weak_inference"],
                     },
+                    "entities": {
+                        "type": "ARRAY",
+                        "items": {"type": "STRING"},
+                    },
+                    "valid_at": {"type": "STRING"},
+                    "expires_at": {"type": "STRING"},
                 },
-                "required": ["content", "category", "temporal_scope", "specificity_score"],
+                "required": ["content", "category", "temporal_scope", "specificity_score", "entities"],
             },
         },
     },
@@ -76,11 +85,13 @@ def _parse_response(response) -> dict | None:
 def extract_facts(text: str, domain: str) -> list[dict]:
     """Extract structured facts from text using Gemini with guaranteed JSON schema.
 
-    Returns list of dicts with keys: content, category, temporal_scope,
-    specificity_score, source_type. Facts with specificity_score < 3 or
-    temporal_scope == "ephemeral" are filtered out.
+    Pipeline: entropy pre-filter → Gemini extraction → specificity/temporal/entity post-filter.
     """
     if not text or len(text.strip()) < 20:
+        return []
+
+    if _is_low_entropy(text):
+        logger.debug("Skipping low-entropy text (%d chars, <%d unique words)", len(text), _MIN_UNIQUE_WORDS)
         return []
 
     prompt = build_prompt(domain)
@@ -115,7 +126,9 @@ def extract_facts(text: str, domain: str) -> list[dict]:
     filtered = [
         fact
         for fact in facts
-        if fact.get("specificity_score", 0) >= _MIN_SPECIFICITY and fact.get("temporal_scope") != "ephemeral"
+        if fact.get("specificity_score", 0) >= _MIN_SPECIFICITY
+        and fact.get("temporal_scope") != "ephemeral"
+        and len(fact.get("entities", ())) > 0
     ]
 
     logger.debug("Extracted %d facts (%d passed filter) from %d chars", len(facts), len(filtered), len(text))
@@ -168,7 +181,14 @@ def store_facts(
             "temporal_scope": fact["temporal_scope"],
             "specificity_score": fact["specificity_score"],
             "source_type": fact.get("source_type", ""),
+            "entities": ", ".join(fact.get("entities", ())),
         }
+        valid_at = fact.get("valid_at")
+        if valid_at:
+            metadata["valid_at"] = valid_at
+        expires_at = fact.get("expires_at")
+        if expires_at:
+            metadata["expires_at"] = expires_at
         if extra_metadata:
             metadata.update(extra_metadata)
         memory.add(
@@ -183,23 +203,50 @@ def store_facts(
     return stored
 
 
+def _is_low_entropy(text: str) -> bool:
+    """Check if text has too few unique words to warrant a Gemini API call."""
+    if len(text) < 100:
+        return True
+    words = {word.lower() for word in text.split() if len(word) > 2}
+    return len(words) < _MIN_UNIQUE_WORDS
+
+
 def _is_duplicate(collection: str, text: str) -> bool:
-    """Check if text is a near-duplicate of an existing fact in the collection."""
+    """Hybrid dedup: weighted combination of cosine similarity and word overlap."""
     try:
         embedding = _embed_text(text)
         if not embedding:
             return False
         response = httpx.post(
             f"{QDRANT_URL}/collections/{collection}/points/search",
-            json={"vector": embedding, "limit": 1},
+            json={"vector": embedding, "limit": 1, "with_payload": True},
         )
         results = response.json().get("result", [])
-        if results and results[0]["score"] >= _DEDUP_THRESHOLD:
-            logger.debug("Duplicate (%.3f): %s", results[0]["score"], text[:80])
+        if not results:
+            return False
+        cosine_score = results[0]["score"]
+        existing_text = results[0].get("payload", {}).get("data", "")
+        jaccard = _jaccard_word_overlap(text, existing_text) if existing_text else 0.0
+        hybrid_score = _DEDUP_COSINE_WEIGHT * cosine_score + _DEDUP_JACCARD_WEIGHT * jaccard
+        if hybrid_score >= _DEDUP_THRESHOLD:
+            logger.debug(
+                "Duplicate (hybrid=%.3f, cos=%.3f, jac=%.3f): %s", hybrid_score, cosine_score, jaccard, text[:80]
+            )
             return True
     except (httpx.HTTPError, KeyError, IndexError):
         logger.debug("Dedup check failed for: %s", text[:80], exc_info=True)
     return False
+
+
+def _jaccard_word_overlap(text_a: str, text_b: str) -> float:
+    """Word-level Jaccard similarity between two texts."""
+    words_a = {word.lower() for word in text_a.split() if len(word) > 2}
+    words_b = {word.lower() for word in text_b.split() if len(word) > 2}
+    if not words_a or not words_b:
+        return 0.0
+    intersection = len(words_a & words_b)
+    union = len(words_a | words_b)
+    return intersection / union
 
 
 def _embed_text(text: str) -> list[float] | None:
