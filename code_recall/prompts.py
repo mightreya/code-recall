@@ -19,17 +19,28 @@ logger = logging.getLogger(__name__)
 
 _SHARED_RULES = """\
 
+## EXTRACTION GATES — apply in order, stop if any gate rejects
+
+### Gate 1: Utility
+Would this fact change a future response to this user? If not → skip.
+Most conversations produce ZERO extractable facts. Empty output is correct and expected.
+
+### Gate 2: Entity anchoring
+Does the fact name at least one specific entity (person, tool, project, place, date, number)? \
+If not → skip. "Prefers functional style" fails. "Prefers Ramda over Lodash for FP" passes.
+
+### Gate 3: Source
+Extract ONLY from USER messages. The assistant may misinterpret, hallucinate, or restate common \
+knowledge — never extract facts from assistant responses.
+
 ## EXTRACTION RULES
-1. Every fact MUST contain concrete specifics: names, numbers, versions, dates, or exact preferences. \
+1. Every fact MUST be self-contained — fully understandable without the conversation.
+2. Include concrete specifics: names, numbers, versions, dates, exact preferences. \
 Never use "recently," "something," "various," or "some."
-2. Every fact MUST be self-contained — fully understandable without seeing the conversation.
 3. Extract PATTERNS and KNOWLEDGE, not individual events or activities.
-4. Extract ONLY from USER messages. Assistant messages provide context but NEVER extract facts \
-from them — the assistant can misinterpret, hallucinate, or state incorrect information.
-5. If nothing is memory-worthy, return an empty list of facts.
 
 ## DO NOT EXTRACT
-- Activity logs: "merged a branch," "sent an email," "ran a test," "is debugging"
+- Activity logs: "merged a branch," "sent an email," "ran a test"
 - Temporary states: "is currently testing X," "is frustrated," "is working on Y right now"
 - Vague summaries: "discussed work topics," "shared preferences," "talked about technical stuff"
 - Common knowledge: "uses a computer," "writes code," "has a job"
@@ -37,12 +48,25 @@ from them — the assistant can misinterpret, hallucinate, or state incorrect in
 - Tool outputs and results: "the API returned 200," "got 3 results," "build succeeded"
 - Default software behavior: "npm install installs packages," "git commit saves changes"
 - Session-specific configuration: "set port to 3000," "using debug mode" (unless a deliberate non-default choice)
+- Facts ABOUT the memory/extraction system itself: "memories are stored in Qdrant," \
+"the extraction pipeline uses Gemini"
+- Bare documentation: version numbers, config schemas, or file paths without WHY they matter
 
-## TEMPORAL CLASSIFICATION — apply before storing:
+## TEMPORAL CLASSIFICATION
 - PERMANENT: Unchanging (name, birthday, native language, identity facts)
 - STABLE: True for months/years, may evolve (job, tools, core preferences, relationships)
 - SITUATIONAL: True for weeks (current project phase, upcoming events with dates)
-- EPHEMERAL: True for hours/days → DO NOT EXTRACT"""
+- EPHEMERAL: True for hours/days → DO NOT EXTRACT
+Convert relative dates ("next Tuesday," "in two weeks") to ISO-8601 in valid_at/expires_at fields.
+
+## OUTPUT FIELDS
+- **content**: The self-contained fact text
+- **category**: Free-form label (use categories from the domain prompt)
+- **temporal_scope**: permanent / stable / situational
+- **specificity_score**: 1-5, where 5 = maximally specific
+- **entities**: List of named entities mentioned in the fact (people, tools, projects, etc.)
+- **valid_at**: ISO-8601 date when this fact became true (if known)
+- **expires_at**: ISO-8601 date when this fact will stop being true (if known, e.g. contract end dates)"""
 
 
 def _date_line() -> str:
@@ -84,7 +108,18 @@ REJECTED: "Uses a monorepo" — loses the specific tools and structure
 Conversation: "Every time I see ECONNREFUSED on port 5432, it's because the Docker Postgres container \
 isn't running"
 GOOD: "ECONNREFUSED on port 5432 means Docker PostgreSQL container is not running"
-REJECTED: "Had a database error" — loses the debugging pattern"""
+REJECTED: "Had a database error" — loses the debugging pattern
+
+## NEGATIVE EXAMPLES — these conversations produce {"facts": []}
+
+Conversation: "Can you fix the import error on line 42?" / "Done, I changed it to a relative import."
+→ Zero facts. One-off debugging step, no generalizable pattern.
+
+Conversation: "I merged the PR, ran tests, deployed to staging, then checked the logs."
+→ Zero facts. Activity log — no lasting knowledge about preferences, architecture, or patterns.
+
+Conversation: "How do I use git rebase?" / "Here's how git rebase works..."
+→ Zero facts. Common knowledge question — nothing user-specific or project-specific."""
 
 
 _DOMAIN_INSTRUCTIONS: dict[str, str] = {
