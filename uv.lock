@@ -190,6 +190,7 @@ dependencies = [
     { name = "mem0ai" },
     { name = "ollama" },
     { name = "pyyaml" },
+    { name = "tenacity" },
 ]
 
 [package.metadata]
@@ -200,6 +201,7 @@ requires-dist = [
     { name = "mem0ai", specifier = ">=0.1.0" },
     { name = "ollama", specifier = ">=0.4.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "tenacity", specifier = ">=9.0.0" },
 ]
 
 [[package]]

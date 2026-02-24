@@ -20,7 +20,7 @@ import httpx
 from google.genai.errors import APIError
 
 from code_recall._mem0 import build_memory
-from code_recall.extract import extract_facts, extract_workflow_state, store_facts
+from code_recall.extract import extract_facts, extract_workflow_state, parse_timestamp, store_facts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 HOST = "127.0.0.1"
 PORT = 7377
 SEARCH_LIMIT = 5
-_DEFAULT_COLLECTION = "mem0_dev"
-_DEFAULT_USER_ID = "developer"
-_DEFAULT_DOMAIN = "developer"
+DEFAULT_COLLECTION = "mem0_dev"
+DEFAULT_USER_ID = "developer"
+DEFAULT_DOMAIN = "developer"
 
 # Lazy-initialized mem0 Memory instances keyed by collection name
 _memories: dict = {}
@@ -68,8 +68,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(200, "")
             return
 
-        memory = _get_memory(_DEFAULT_COLLECTION)
-        results = memory.search(query, user_id=_DEFAULT_USER_ID, limit=SEARCH_LIMIT)
+        memory = _get_memory(DEFAULT_COLLECTION)
+        results = memory.search(query, user_id=DEFAULT_USER_ID, limit=SEARCH_LIMIT)
         memories = results.get("results", results) if isinstance(results, dict) else results
         if not memories:
             self._respond(200, "")
@@ -151,9 +151,9 @@ def _parse_add_body(body: str) -> dict:
         if isinstance(data, dict) and "text" in data:
             return {
                 "text": data["text"],
-                "domain": data.get("domain", _DEFAULT_DOMAIN),
-                "collection": data.get("collection", _DEFAULT_COLLECTION),
-                "user_id": data.get("user_id", _DEFAULT_USER_ID),
+                "domain": data.get("domain", DEFAULT_DOMAIN),
+                "collection": data.get("collection", DEFAULT_COLLECTION),
+                "user_id": data.get("user_id", DEFAULT_USER_ID),
                 "sourced_at": data.get("sourced_at", ""),
                 "project": data.get("project", ""),
             }
@@ -161,9 +161,9 @@ def _parse_add_body(body: str) -> dict:
         pass
     return {
         "text": body,
-        "domain": _DEFAULT_DOMAIN,
-        "collection": _DEFAULT_COLLECTION,
-        "user_id": _DEFAULT_USER_ID,
+        "domain": DEFAULT_DOMAIN,
+        "collection": DEFAULT_COLLECTION,
+        "user_id": DEFAULT_USER_ID,
     }
 
 
@@ -171,7 +171,8 @@ def _add_memory(params: dict) -> None:
     """Extract structured facts and store in the appropriate collection."""
     try:
         memory = _get_memory(params["collection"])
-        facts = extract_facts(params["text"], domain=params["domain"])
+        reference_date = parse_timestamp(params.get("sourced_at", ""))
+        facts = extract_facts(params["text"], domain=params["domain"], reference_date=reference_date)
         sourced_at = params.get("sourced_at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         metadata = {"sourced_at": sourced_at}
         if params.get("project"):
@@ -220,7 +221,7 @@ def _capture_workflow_state(text: str, workspace: str) -> None:
 
 def main() -> None:
     # Pre-load the default Claude Code collection
-    _get_memory(_DEFAULT_COLLECTION)
+    _get_memory(DEFAULT_COLLECTION)
     logger.info("Starting server on %s:%d", HOST, PORT)
 
     server = HTTPServer((HOST, PORT), _Handler)
