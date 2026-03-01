@@ -8,6 +8,7 @@ Shared by daemon.py, reingest.py, and ingest.py.
 import json
 import logging
 import os
+from datetime import datetime
 
 import httpx
 from google import genai
@@ -82,10 +83,12 @@ def _parse_response(response) -> dict | None:
         return None
 
 
-def extract_facts(text: str, domain: str) -> list[dict]:
+def extract_facts(text: str, domain: str, reference_date: datetime | None = None) -> list[dict]:
     """Extract structured facts from text using Gemini with guaranteed JSON schema.
 
     Pipeline: entropy pre-filter → Gemini extraction → specificity/temporal/entity post-filter.
+    When reference_date is provided, the LLM sees that date instead of today —
+    ensures valid_at reflects when conversations happened, not when reingest runs.
     """
     if not text or len(text.strip()) < 20:
         return []
@@ -94,7 +97,7 @@ def extract_facts(text: str, domain: str) -> list[dict]:
         logger.debug("Skipping low-entropy text (%d chars, <%d unique words)", len(text), _MIN_UNIQUE_WORDS)
         return []
 
-    prompt = build_prompt(domain)
+    prompt = build_prompt(domain, reference_date)
     client = _get_client()
 
     config = types.GenerateContentConfig(
@@ -201,6 +204,17 @@ def store_facts(
     if skipped:
         logger.info("Dedup: skipped %d/%d duplicate facts", skipped, skipped + stored)
     return stored
+
+
+def parse_timestamp(timestamp: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp string to datetime. Returns None on empty/invalid input."""
+    if not timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        return parsed
+    except ValueError:
+        return None
 
 
 def _is_low_entropy(text: str) -> bool:

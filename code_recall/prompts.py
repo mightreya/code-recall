@@ -69,8 +69,10 @@ Convert relative dates ("next Tuesday," "in two weeks") to ISO-8601 in valid_at/
 - **expires_at**: ISO-8601 date when this fact will stop being true (if known, e.g. contract end dates)"""
 
 
-def _date_line() -> str:
-    return f"\n\nToday's date is {datetime.now().strftime('%Y-%m-%d')}."
+def _date_line(reference_date: datetime | None = None) -> str:
+    effective = reference_date or datetime.now()
+    line = f"\n\nToday's date is {effective.strftime('%Y-%m-%d')}."
+    return line
 
 
 # Domain-specific instruction blocks
@@ -183,22 +185,24 @@ Keep output under 500 tokens. Be specific — file paths, item counts, exact sta
 """
 
 
-def build_prompt(domain: str) -> str:
+def build_prompt(domain: str, reference_date: datetime | None = None) -> str:
     """Return extraction instructions for a domain, without output format.
 
     Used by extract.py where Gemini response_schema handles the output format.
+    When reference_date is provided, the LLM sees that date instead of today —
+    critical for reingest pipelines where conversations happened in the past.
     """
     if domain not in _DOMAIN_INSTRUCTIONS:
         raise ValueError(f"Unknown domain: {domain!r}. Valid: {', '.join(_DOMAIN_INSTRUCTIONS)}")
     instructions = _DOMAIN_INSTRUCTIONS[domain]
-    prompt = instructions + _SHARED_RULES + _date_line()
+    prompt = instructions + _SHARED_RULES + _date_line(reference_date)
     return prompt
 
 
-def build_mem0_prompt(domain: str) -> str:
+def build_mem0_prompt(domain: str, reference_date: datetime | None = None) -> str:
     """Return extraction instructions with mem0 {"facts": []} output format.
 
     Used by OpenClaw bot configs (customPrompt) where mem0 parses the output.
     """
-    prompt = build_prompt(domain) + _MEM0_FORMAT_SUFFIX
+    prompt = build_prompt(domain, reference_date) + _MEM0_FORMAT_SUFFIX
     return prompt
