@@ -1,15 +1,14 @@
 """Memory daemon: persistent HTTP server for fact extraction and recall.
 
 Endpoints:
-  POST /search  — body is the query text, returns memory-context plain text
-  POST /add     — text body (Claude Code default) or JSON {text, domain, collection, user_id}
+  POST /search  — JSON {query, collection, user_id, limit, expand} → JSON results
+  POST /add     — JSON {text, domain, collection, user_id} → 204
   GET  /health  — returns 200
 """
 
 import json
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -20,7 +19,13 @@ import httpx
 from google.genai.errors import APIError
 
 from code_recall._mem0 import build_memory
-from code_recall.extract import extract_facts, extract_workflow_state, parse_timestamp, store_facts
+from code_recall.extract import (
+    extract_facts,
+    extract_workflow_state,
+    hybrid_search,
+    parse_timestamp,
+    store_facts,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -63,33 +68,26 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._respond(404, "not found")
 
-    def _handle_search(self, query: str) -> None:
-        if not query.strip():
-            self._respond(200, "")
+    def _handle_search(self, body: str) -> None:
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._respond(400, "invalid json")
             return
 
-        memory = _get_memory(DEFAULT_COLLECTION)
-        results = memory.search(query, user_id=DEFAULT_USER_ID, limit=SEARCH_LIMIT)
-        memories = results.get("results", results) if isinstance(results, dict) else results
-        if not memories:
-            self._respond(200, "")
+        query = data.get("query", "")
+        if not query:
+            self._respond_json(200, [])
             return
 
-        lines = ["<memory-context>", "Relevant memories from previous sessions:"]
-        for entry in memories:
-            text = entry.get("memory", "") if isinstance(entry, dict) else str(entry)
-            if not text:
-                continue
-            metadata = entry.get("metadata", {}) or {}
-            raw_date = metadata.get("sourced_at") or entry.get("updated_at") or entry.get("created_at") or ""
-            timestamp = raw_date[:16].replace("T", " ") if len(raw_date) >= 16 else raw_date[:10]
-            source = _format_source(metadata.get("source", ""))
-            labels = [timestamp, metadata.get("project", ""), metadata.get("category", ""), source]
-            prefix = " ".join(f"[{label}]" for label in labels if label)
-            lines.append(f"- {prefix} {text}" if prefix else f"- {text}")
-        lines.append("</memory-context>")
-
-        self._respond(200, "\n".join(lines))
+        points = hybrid_search(
+            collection=data.get("collection", DEFAULT_COLLECTION),
+            query=query,
+            user_id=data.get("user_id", DEFAULT_USER_ID),
+            limit=data.get("limit", SEARCH_LIMIT),
+            expand=data.get("expand", False),
+        )
+        self._respond_json(200, points)
 
     def _handle_add(self, body: str) -> None:
         if not body.strip():
@@ -129,19 +127,16 @@ class _Handler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body.encode())
 
+    def _respond_json(self, code: int, data: list | dict) -> None:
+        payload = json.dumps(data).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def log_message(self, format: str, /, *args: object) -> None:
         """Suppress default request logging."""
-
-
-def _format_source(source: str) -> str:
-    """Convert source filename like 'session-05-sep-24-2025.md' to readable label."""
-    if not source:
-        return ""
-    match = re.match(r"session-(\d+)", source)
-    if not match:
-        return ""
-    session_number = int(match.group(1))
-    return f"Therapy session #{session_number}"
 
 
 def _parse_add_body(body: str) -> dict:

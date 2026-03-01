@@ -1,16 +1,19 @@
-"""Structured fact extraction and storage using Gemini with response_schema.
+"""Structured fact extraction, storage, and hybrid search using Gemini + Qdrant.
 
 Shared by daemon.py, reingest.py, and ingest.py.
 - extract_facts() calls Gemini directly for structured JSON output
 - store_facts() writes extracted facts to Qdrant via mem0 with infer=False
+- hybrid_search() does dense+sparse retrieval with RRF fusion
 """
 
+import functools
 import json
 import logging
 import os
 from datetime import datetime
 
 import httpx
+from fastembed import SparseTextEmbedding
 from google import genai
 from google.genai import types
 
@@ -25,6 +28,11 @@ _DEDUP_THRESHOLD = 0.85
 _MIN_UNIQUE_WORDS = 15
 _DEDUP_COSINE_WEIGHT = 0.7
 _DEDUP_JACCARD_WEIGHT = 0.3
+_PREFETCH_LIMIT = 20
+_EXPAND_PROMPT = (
+    "Rewrite this search query 3 different ways to capture different vocabulary. "
+    "Resolve any pronouns using context. Return a JSON array of strings.\nQuery: {query}"
+)
 
 _RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -63,24 +71,42 @@ _MAX_RETRIES = 1
 _client: genai.Client | None = None
 
 
-def _get_client() -> genai.Client:
-    """Lazy-init Gemini client."""
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    return _client
+def hybrid_search(
+    collection: str,
+    query: str,
+    user_id: str,
+    limit: int = 7,
+    expand: bool = False,
+) -> list[dict]:
+    """Dense+BM25 hybrid search with RRF fusion. Optionally expands queries via Gemini Flash."""
+    queries = _expand_queries(query) if expand else (query,)
 
+    user_filter = {
+        "should": [
+            {"key": "user_id", "match": {"value": user_id}},
+            {"key": "userId", "match": {"value": user_id}},
+        ],
+    }
 
-def _parse_response(response) -> dict | None:
-    """Parse Gemini response JSON, returning None on failure."""
-    text = response.candidates[0].content.parts[0].text if response.candidates else ""
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("Gemini returned invalid JSON (%d chars)", len(text))
-        return None
+    prefetch = []
+    for variant in queries:
+        dense = _embed_text(variant)
+        if dense:
+            prefetch.append({"query": dense, "limit": _PREFETCH_LIMIT, "filter": user_filter})
+
+        sparse = _sparse_encode(variant)
+        if sparse:
+            prefetch.append({"query": sparse, "using": "sparse", "limit": _PREFETCH_LIMIT, "filter": user_filter})
+
+    if not prefetch:
+        return []
+
+    response = httpx.post(
+        f"{QDRANT_URL}/collections/{collection}/points/query",
+        json={"prefetch": prefetch, "query": {"fusion": "rrf"}, "limit": limit, "with_payload": True},
+    )
+    points = response.json().get("result", {}).get("points", [])
+    return points
 
 
 def extract_facts(text: str, domain: str, reference_date: datetime | None = None) -> list[dict]:
@@ -170,8 +196,8 @@ def store_facts(
     """Store extracted facts in Qdrant via mem0 with infer=False. Returns count stored.
 
     When collection_name is provided, each fact is checked for near-duplicates
-    before insertion (~35ms overhead per fact). Fail-open: dedup errors are logged
-    but never block insertion.
+    before insertion (~35ms overhead per fact). After mem0 stores the dense vector,
+    a BM25 sparse vector is added for hybrid retrieval. Both dedup and sparse are fail-open.
     """
     stored = 0
     skipped = 0
@@ -194,13 +220,15 @@ def store_facts(
             metadata["expires_at"] = expires_at
         if extra_metadata:
             metadata.update(extra_metadata)
-        memory.add(
+        result = memory.add(
             [{"role": "user", "content": fact["content"]}],
             user_id=user_id,
             infer=False,
             metadata=metadata,
         )
         stored += 1
+        if collection_name:
+            _upsert_sparse_vector(collection_name, result, fact["content"])
     if skipped:
         logger.info("Dedup: skipped %d/%d duplicate facts", skipped, skipped + stored)
     return stored
@@ -215,6 +243,99 @@ def parse_timestamp(timestamp: str) -> datetime | None:
         return parsed
     except ValueError:
         return None
+
+
+def _get_client() -> genai.Client:
+    """Lazy-init Gemini client."""
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    return _client
+
+
+@functools.cache
+def _get_sparse_model() -> SparseTextEmbedding:
+    """Lazy-init fastembed BM25 sparse text embedding model."""
+    logger.info("Loading fastembed BM25 sparse model")
+    return SparseTextEmbedding(model_name="Qdrant/bm25")
+
+
+def _parse_response(response) -> dict | None:
+    """Parse Gemini response JSON, returning None on failure."""
+    text = response.candidates[0].content.parts[0].text if response.candidates else ""
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("Gemini returned invalid JSON (%d chars)", len(text))
+        return None
+
+
+def _expand_queries(query: str) -> tuple[str, ...]:
+    """Generate query variants via Gemini Flash for multi-query expansion."""
+    try:
+        client = _get_client()
+        config = types.GenerateContentConfig(
+            temperature=0.7,
+            max_output_tokens=512,
+            response_mime_type="application/json",
+        )
+        prompt = _EXPAND_PROMPT.format(query=query)
+        contents = [types.Content(parts=[types.Part(text=prompt)], role="user")]
+        response = client.models.generate_content(model=_MODEL, contents=contents, config=config)
+        text = response.candidates[0].content.parts[0].text if response.candidates else ""
+        variants = json.loads(text) if text else []
+        if isinstance(variants, list):
+            extras = tuple(variant for variant in variants if isinstance(variant, str))[:3]
+            return (query, *extras)
+    except (json.JSONDecodeError, IndexError, AttributeError):
+        logger.debug("Query expansion failed, using original", exc_info=True)
+    return (query,)
+
+
+def _embed_text(text: str) -> list[float] | None:
+    """Embed text via Ollama BGE-M3. Returns None on failure."""
+    try:
+        response = httpx.post(
+            f"{OLLAMA_URL}/api/embed",
+            json={"model": "bge-m3", "input": text},
+        )
+        embeddings = response.json().get("embeddings", [])
+        return embeddings[0] if embeddings else None
+    except (httpx.HTTPError, KeyError, IndexError):
+        logger.debug("Embedding failed: %s", text[:80], exc_info=True)
+        return None
+
+
+def _sparse_encode(text: str) -> dict | None:
+    """Encode text as BM25 sparse vector via fastembed. Returns {indices, values} or None."""
+    try:
+        model = _get_sparse_model()
+        embedding = next(model.embed((text,)))
+        return {"indices": embedding.indices.tolist(), "values": embedding.values.tolist()}
+    except (StopIteration, RuntimeError):
+        logger.debug("Sparse encoding failed: %s", text[:80], exc_info=True)
+        return None
+
+
+def _upsert_sparse_vector(collection: str, add_result: dict, text: str) -> None:
+    """Add BM25 sparse vector to a just-stored point. Fail-open."""
+    try:
+        results = add_result.get("results", []) if isinstance(add_result, dict) else []
+        for item in results:
+            point_id = item.get("id")
+            if not point_id or item.get("event") not in ("ADD", "UPDATE"):
+                continue
+            sparse = _sparse_encode(text)
+            if not sparse:
+                continue
+            httpx.put(
+                f"{QDRANT_URL}/collections/{collection}/points/vectors",
+                json={"points": [{"id": point_id, "vector": {"sparse": sparse}}]},
+            )
+    except (httpx.HTTPError, KeyError, TypeError):
+        logger.debug("Sparse vector upsert failed: %s", text[:80], exc_info=True)
 
 
 def _is_low_entropy(text: str) -> bool:
@@ -261,17 +382,3 @@ def _jaccard_word_overlap(text_a: str, text_b: str) -> float:
     intersection = len(words_a & words_b)
     union = len(words_a | words_b)
     return intersection / union
-
-
-def _embed_text(text: str) -> list[float] | None:
-    """Embed text via Ollama BGE-M3. Returns None on failure."""
-    try:
-        response = httpx.post(
-            f"{OLLAMA_URL}/api/embed",
-            json={"model": "bge-m3", "input": text},
-        )
-        embeddings = response.json().get("embeddings", [])
-        return embeddings[0] if embeddings else None
-    except (httpx.HTTPError, KeyError, IndexError):
-        logger.debug("Embedding failed for: %s", text[:80], exc_info=True)
-        return None
