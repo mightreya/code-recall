@@ -2,15 +2,13 @@
 
 Endpoints:
   POST /search  — JSON {query, collection, user_id, limit, expand} → JSON results
-                   plain text body → formatted memory-context (Claude Code backward compat)
-  POST /add     — text body (Claude Code default) or JSON {text, domain, collection, user_id}
+  POST /add     — JSON {text, domain, collection, user_id} → 204
   GET  /health  — returns 200
 """
 
 import json
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -71,25 +69,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(404, "not found")
 
     def _handle_search(self, body: str) -> None:
-        params = _parse_search_body(body)
-        if not params["query"]:
-            self._respond(200, "")
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._respond(400, "invalid json")
+            return
+
+        query = data.get("query", "")
+        if not query:
+            self._respond_json(200, [])
             return
 
         points = hybrid_search(
-            collection=params["collection"],
-            query=params["query"],
-            user_id=params["user_id"],
-            limit=params["limit"],
-            expand=params["expand"],
+            collection=data.get("collection", DEFAULT_COLLECTION),
+            query=query,
+            user_id=data.get("user_id", DEFAULT_USER_ID),
+            limit=data.get("limit", SEARCH_LIMIT),
+            expand=data.get("expand", False),
         )
-
-        # JSON request → JSON response; plain text → formatted memory-context
-        if params["json_request"]:
-            self._respond_json(200, points)
-        else:
-            formatted = _format_memory_context(points)
-            self._respond(200, formatted)
+        self._respond_json(200, points)
 
     def _handle_add(self, body: str) -> None:
         if not body.strip():
@@ -139,62 +137,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, /, *args: object) -> None:
         """Suppress default request logging."""
-
-
-def _parse_search_body(body: str) -> dict:
-    """Parse /search request body — JSON with params or plain text for backward compat."""
-    try:
-        data = json.loads(body)
-        if isinstance(data, dict) and "query" in data:
-            return {
-                "query": data["query"],
-                "collection": data.get("collection", DEFAULT_COLLECTION),
-                "user_id": data.get("user_id", DEFAULT_USER_ID),
-                "limit": data.get("limit", SEARCH_LIMIT),
-                "expand": data.get("expand", False),
-                "json_request": True,
-            }
-    except (json.JSONDecodeError, KeyError):
-        pass
-    return {
-        "query": body.strip(),
-        "collection": DEFAULT_COLLECTION,
-        "user_id": DEFAULT_USER_ID,
-        "limit": SEARCH_LIMIT,
-        "expand": False,
-        "json_request": False,
-    }
-
-
-def _format_memory_context(points: list[dict]) -> str:
-    """Format hybrid search results as <memory-context> text for Claude Code hooks."""
-    if not points:
-        return ""
-    lines = ["<memory-context>", "Relevant memories from previous sessions:"]
-    for point in points:
-        payload = point.get("payload", {})
-        text = payload.get("data", "")
-        if not text:
-            continue
-        raw_date = payload.get("sourced_at") or payload.get("updated_at") or payload.get("created_at") or ""
-        timestamp = raw_date[:16].replace("T", " ") if len(raw_date) >= 16 else raw_date[:10]
-        source = _format_source(payload.get("source", ""))
-        labels = (timestamp, payload.get("project", ""), payload.get("category", ""), source)
-        prefix = " ".join(f"[{label}]" for label in labels if label)
-        lines.append(f"- {prefix} {text}" if prefix else f"- {text}")
-    lines.append("</memory-context>")
-    return "\n".join(lines)
-
-
-def _format_source(source: str) -> str:
-    """Convert source filename like 'session-05-sep-24-2025.md' to readable label."""
-    if not source:
-        return ""
-    match = re.match(r"session-(\d+)", source)
-    if not match:
-        return ""
-    session_number = int(match.group(1))
-    return f"Therapy session #{session_number}"
 
 
 def _parse_add_body(body: str) -> dict:
