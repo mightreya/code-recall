@@ -1,0 +1,13 @@
+[Unit]
+Description=Code Recall Memory Daemon (Mem0 + Qdrant)
+After=qdrant.service
+
+[Service]
+Type=simple
+ExecStart=%h/code-recall/.venv/bin/code-recall-daemon
+Environment=GEMINI_API_KEY=YOUR_KEY_HERE
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

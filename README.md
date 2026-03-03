@@ -1,4 +1,4 @@
-# claude-memory
+# code-recall
 
 Persistent memory for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Remembers facts from your conversations and recalls them automatically in future sessions.
 
@@ -28,8 +28,8 @@ ollama pull bge-m3
 ### 2. Install
 
 ```bash
-git clone https://github.com/mightreya/claude-memory.git ~/claude-memory
-cd ~/claude-memory && uv sync
+git clone https://github.com/mightreya/code-recall.git ~/code-recall
+cd ~/code-recall && uv sync
 chmod +x hooks/*.sh
 ```
 
@@ -39,10 +39,10 @@ chmod +x hooks/*.sh
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/claude-memory/claude-memory.service ~/.config/systemd/user/
-sed -i "s/YOUR_KEY_HERE/$GEMINI_API_KEY/" ~/.config/systemd/user/claude-memory.service
+cp ~/code-recall/code-recall.service ~/.config/systemd/user/
+sed -i "s/YOUR_KEY_HERE/$GEMINI_API_KEY/" ~/.config/systemd/user/code-recall.service
 systemctl --user daemon-reload
-systemctl --user enable --now claude-memory
+systemctl --user enable --now code-recall
 ```
 
 **Option B: launchd (macOS)**
@@ -50,22 +50,19 @@ systemctl --user enable --now claude-memory
 ```bash
 export GEMINI_API_KEY="your-key-here"
 
-cat > ~/Library/LaunchAgents/com.claude-memory.plist << EOF
+cat > ~/Library/LaunchAgents/com.code-recall.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.claude-memory</string>
+  <string>com.code-recall</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$HOME/claude-memory/.venv/bin/python</string>
-    <string>$HOME/claude-memory/daemon.py</string>
+    <string>$HOME/code-recall/.venv/bin/code-recall-daemon</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PYTHONPATH</key>
-    <string>$HOME/claude-memory</string>
     <key>GEMINI_API_KEY</key>
     <string>$GEMINI_API_KEY</string>
   </dict>
@@ -74,21 +71,20 @@ cat > ~/Library/LaunchAgents/com.claude-memory.plist << EOF
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/claude-memory.log</string>
+  <string>/tmp/code-recall.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/claude-memory.log</string>
+  <string>/tmp/code-recall.log</string>
 </dict>
 </plist>
 EOF
 
-launchctl load ~/Library/LaunchAgents/com.claude-memory.plist
+launchctl load ~/Library/LaunchAgents/com.code-recall.plist
 ```
 
 **Option C: run manually**
 
 ```bash
-GEMINI_API_KEY="your-key-here" PYTHONPATH=~/claude-memory \
-  ~/claude-memory/.venv/bin/python ~/claude-memory/daemon.py
+GEMINI_API_KEY="your-key-here" ~/code-recall/.venv/bin/code-recall-daemon
 ```
 
 ### 4. Register hooks
@@ -103,7 +99,7 @@ Add to `~/.claude/settings.json` (merge with existing settings if any):
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/claude-memory/hooks/recall.sh"
+            "command": "$HOME/code-recall/hooks/recall.sh"
           }
         ]
       }
@@ -113,7 +109,7 @@ Add to `~/.claude/settings.json` (merge with existing settings if any):
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/claude-memory/hooks/capture.sh"
+            "command": "$HOME/code-recall/hooks/capture.sh"
           }
         ]
       }
@@ -136,16 +132,35 @@ curl -s -X POST http://127.0.0.1:7377/add \
 
 # Wait for extraction, then search
 sleep 5
-curl -s -d "linting setup" http://127.0.0.1:7377/search
-# → <memory-context> with the captured fact
+curl -s -X POST http://127.0.0.1:7377/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "linting setup"}'
+# → JSON array of matching memories
 ```
 
 Start a Claude Code session. You should see memories injected automatically.
 
+## Reingest existing sessions
+
+If you have existing Claude Code transcript history (in `~/.claude/projects/`), you can bulk-ingest all past sessions:
+
+```bash
+# Wipe the collection and re-ingest everything
+cd ~/code-recall && uv run code-recall-reingest
+
+# Preview what would be extracted without storing
+cd ~/code-recall && uv run code-recall-reingest --dry-run
+
+# Wipe the collection without re-ingesting (fresh start)
+cd ~/code-recall && uv run code-recall-reingest --wipe-only
+```
+
+Reingest discovers all `.jsonl` transcript files under `~/.claude/projects/`, extracts facts via Gemini with original timestamps preserved, and stores them in Qdrant with deduplication. Rate-limited to ~2 requests/second.
+
 ## How it works
 
 ```
-User prompt ──→ recall.sh ──→ POST /search ──→ Qdrant
+User prompt ──→ recall.sh ──→ POST /search ──→ Qdrant (dense + BM25 hybrid)
   (jq + curl)    ~200ms         daemon
   injects <memory-context>
 
@@ -155,8 +170,8 @@ Session end ──→ capture.sh ──→ POST /add ──→ Gemini (extractio
                                             → Mem0 (deduplication)
 ```
 
-- **Recall** runs before every prompt. Searches Qdrant via BGE-M3 embeddings and injects matching memories.
-- **Capture** runs after every response. Extracts the last 10 messages from the transcript, sends them to Gemini for structured fact extraction with quality scoring. Low-specificity and ephemeral facts are filtered out.
+- **Recall** runs before every prompt. Performs hybrid search (semantic embeddings + BM25 keyword matching) via Reciprocal Rank Fusion and injects matching memories.
+- **Capture** runs after every session. Extracts the last 10 messages from the transcript, sends them to Gemini for structured fact extraction with quality scoring. Low-specificity and ephemeral facts are filtered out.
 - **Fail-open**: both hooks exit 0 on any error. A dead daemon never breaks Claude Code.
 
 ## Custom domains
@@ -184,17 +199,17 @@ Then use it via the `/add` endpoint with `"domain": "my_domain"`.
 
 ```bash
 # Daemon logs (Linux)
-journalctl --user -u claude-memory -f
+journalctl --user -u code-recall -f
 
 # Daemon logs (macOS)
-tail -f /tmp/claude-memory.log
+tail -f /tmp/code-recall.log
 
 # Check Qdrant has data
 curl -s http://localhost:6333/collections/mem0_dev | jq .result.points_count
 
 # Restart daemon (Linux / macOS)
-systemctl --user restart claude-memory
-launchctl kickstart -k gui/$(id -u)/com.claude-memory
+systemctl --user restart code-recall
+launchctl kickstart -k gui/$(id -u)/com.code-recall
 ```
 
 ## License
