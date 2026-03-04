@@ -2,6 +2,7 @@
 
 Usage:
     code-recall-reingest                    # Re-ingest all transcripts
+    code-recall-reingest --resume           # Resume from last completed file
     code-recall-reingest --dry-run          # Extract facts without storing
     code-recall-reingest --wipe-only        # Just wipe, don't re-ingest
 """
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _TRANSCRIPTS_ROOT = Path.home() / ".claude" / "projects"
 _EXTRACT_DELAY_SECONDS = 0.5
+_RESUME_STATE = Path.home() / ".cache" / "code-recall" / "resume-mtime.txt"
 
 _GEMINI_RETRY = retry(
     retry=retry_if_exception_type((ClientError, ServerError)),
@@ -44,14 +46,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Wipe and rebuild from Claude Code transcripts")
     parser.add_argument("--dry-run", action="store_true", help="Extract facts but don't store")
     parser.add_argument("--wipe-only", action="store_true", help="Just wipe collection, don't re-ingest")
+    parser.add_argument("--resume", action="store_true", help="Resume from last completed file")
     args = parser.parse_args()
 
-    _wipe_collection(DEFAULT_COLLECTION)
+    if not args.resume:
+        _wipe_collection(DEFAULT_COLLECTION)
     if args.wipe_only:
         return
 
     transcripts = _find_transcripts()
-    logger.info("Found %d transcript files", len(transcripts))
+    if args.resume:
+        cutoff = _load_resume_mtime()
+        if cutoff:
+            before = len(transcripts)
+            transcripts = [p for p in transcripts if p.stat().st_mtime > cutoff]
+            logger.info("Resuming: skipping %d already-processed files", before - len(transcripts))
+
+    logger.info("Found %d transcript files to process", len(transcripts))
+    if not transcripts:
+        return
 
     memory = None if args.dry_run else build_memory(DEFAULT_COLLECTION)
 
@@ -59,6 +72,7 @@ def main() -> None:
     for index, path in enumerate(transcripts):
         count = _reingest_transcript(path, memory)
         total_facts += count
+        _save_resume_mtime(path.stat().st_mtime)
         logger.info(
             "  [%d/%d] %s → %d facts",
             index + 1, len(transcripts),
@@ -118,6 +132,20 @@ def _find_transcripts() -> list[Path]:
     paths = [path for path in _TRANSCRIPTS_ROOT.rglob("*.jsonl") if "subagents" not in path.parts]
     paths.sort(key=lambda path: path.stat().st_mtime)
     return paths
+
+
+def _load_resume_mtime() -> float | None:
+    """Load the mtime of the last successfully processed transcript."""
+    try:
+        return float(_RESUME_STATE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _save_resume_mtime(mtime: float) -> None:
+    """Save mtime checkpoint after each successfully processed transcript."""
+    _RESUME_STATE.parent.mkdir(parents=True, exist_ok=True)
+    _RESUME_STATE.write_text(str(mtime))
 
 
 def _parse_transcript(path: Path) -> list[tuple[str, str]]:
