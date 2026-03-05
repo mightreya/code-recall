@@ -157,6 +157,20 @@ cd ~/code-recall && uv run code-recall-reingest --wipe-only
 
 Reingest discovers all `.jsonl` transcript files under `~/.claude/projects/`, extracts facts via Gemini with original timestamps preserved, and stores them in Qdrant with deduplication. Rate-limited to ~2 requests/second.
 
+## Nightly consolidation
+
+Over time, near-duplicate facts accumulate. The consolidation job deduplicates by vector similarity (0.80 threshold, keeps newer) and prunes expired situational facts.
+
+```bash
+# Run manually
+cd ~/code-recall && uv run code-recall-consolidate
+
+# Install as nightly systemd timer (Linux)
+cp ~/code-recall/code-recall-consolidate.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now code-recall-consolidate.timer
+```
+
 ## How it works
 
 ```

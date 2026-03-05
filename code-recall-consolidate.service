@@ -1,0 +1,7 @@
+[Unit]
+Description=Code Recall Memory Consolidation
+After=qdrant.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/code-recall/.venv/bin/code-recall-consolidate

@@ -24,6 +24,7 @@ packages = ["code_recall"]
 [project.scripts]
 code-recall-daemon = "code_recall.daemon:main"
 code-recall-reingest = "code_recall.reingest:main"
+code-recall-consolidate = "code_recall.consolidate:main"
 
 [tool.ruff]
 line-length = 120
