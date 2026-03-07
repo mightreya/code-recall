@@ -6,12 +6,12 @@ from mem0 import Memory
 from mem0.llms.anthropic import AnthropicLLM
 from mem0.memory.utils import remove_code_blocks
 
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 QDRANT_URL = f"http://{QDRANT_HOST}:{QDRANT_PORT}"
 
-OLLAMA_HOST = "localhost"
-OLLAMA_PORT = 11434
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "localhost")
+OLLAMA_PORT = int(os.environ.get("OLLAMA_PORT", "11434"))
 OLLAMA_URL = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
 
 # Class-level monkey-patch for AnthropicLLM (mem0ai v1.0.3)
